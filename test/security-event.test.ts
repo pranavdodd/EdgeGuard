@@ -5,6 +5,11 @@ import worker, {
 } from "../src/index";
 import { mapSecurityEvent } from "../src/events/mapper";
 import {
+  analyzeSecurityEvent,
+  buildThreatAnalysisPrompt,
+  parseThreatAnalysisDraft,
+} from "../src/events/analyst";
+import {
   getSecurityEventByRequestId,
   insertSecurityEvent,
   listRecentSecurityEvents,
@@ -341,5 +346,121 @@ describe("M7 read-only analytics API", () => {
     );
 
     expect(response.status).toBe(400);
+  });
+});
+
+describe("M8 Workers AI threat analyst", () => {
+  const validModelOutput = {
+    summary: "Sensitive path probe matches a configuration discovery attempt.",
+    category: "reconnaissance",
+    evidenceSignalIds: ["sensitive_path_probe"],
+    recommendedAction: "Review the request pattern and monitor similar probes.",
+    proposedRule: {
+      title: "Configuration path probe",
+      rationale:
+        "Repeated probes for sensitive files may indicate reconnaissance.",
+      pattern: "/.env",
+    },
+    confidence: "high",
+    caveats: ["A single event is not proof of malicious intent."],
+  };
+
+  it("builds a minimized prompt without prohibited request data", () => {
+    const prompt = buildThreatAnalysisPrompt(event);
+
+    expect(prompt).toContain('"signalIds":[]');
+    expect(prompt).not.toContain("203.0.113.42");
+    expect(prompt).not.toContain("private-token");
+    expect(prompt).not.toContain("private-cookie");
+    expect(prompt).not.toContain("private-fingerprint-secret");
+    expect(prompt).not.toContain("do-not-store");
+  });
+
+  it("validates structured model output and creates separate analysis metadata", async () => {
+    const run = vi
+      .fn()
+      .mockResolvedValue({ response: JSON.stringify(validModelOutput) });
+    const analysis = await analyzeSecurityEvent({ run }, event, "test-model");
+
+    expect(run).toHaveBeenCalledOnce();
+    expect(analysis).toMatchObject({
+      eventId: event.id,
+      model: "test-model",
+      category: "reconnaissance",
+      confidence: "high",
+    });
+    expect(analysis?.analysisId).toEqual(expect.any(String));
+    expect(parseThreatAnalysisDraft("not-json")).toBeNull();
+    expect(
+      parseThreatAnalysisDraft({ ...validModelOutput, confidence: "certain" }),
+    ).toBeNull();
+    expect(
+      parseThreatAnalysisDraft({ ...validModelOutput, extra: true }),
+    ).toBeNull();
+  });
+
+  it("keeps AI failures out of request enforcement and exposes no-analysis state", async () => {
+    const run = vi.fn().mockRejectedValue(new Error("model unavailable"));
+    await expect(
+      analyzeSecurityEvent({ run }, event, "test-model"),
+    ).rejects.toThrow("model unavailable");
+
+    const response = await worker.fetch(
+      new Request("https://example.com/api/security/analysis?eventId=missing", {
+        headers: { "x-api-key": "dashboard-secret" },
+      }),
+      {
+        ANALYTICS_API_KEY: "dashboard-secret",
+        DB: {
+          prepare: () => ({
+            bind: () => ({ first: async () => null }),
+          }),
+        } as unknown as D1Database,
+      },
+    );
+    await expect(response.json()).resolves.toEqual({
+      aiGenerated: true,
+      analysis: null,
+    });
+  });
+
+  it("invokes AI only from queue processing and persists analysis separately", async () => {
+    const run = vi
+      .fn()
+      .mockResolvedValue({ response: JSON.stringify(validModelOutput) });
+    const prepare = vi.fn((sql: string) => ({
+      bind: vi.fn(() => ({ run: vi.fn().mockResolvedValue({}) })),
+      sql,
+    }));
+    const ack = vi.fn();
+    const retry = vi.fn();
+
+    await worker.queue?.(
+      {
+        messages: [{ body: event, ack, retry }],
+      } as unknown as MessageBatch<SecurityEvent>,
+      { DB: { prepare } as unknown as D1Database, AI: { run } },
+    );
+
+    expect(run).toHaveBeenCalledOnce();
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(prepare.mock.calls[1]?.[0]).toContain("threat_analyses");
+    expect(ack).toHaveBeenCalledOnce();
+    expect(retry).not.toHaveBeenCalled();
+
+    const requestAi = vi.fn();
+    const response = await worker.fetch(
+      new Request("https://example.com/api/items", {
+        headers: { "user-agent": "Mozilla/5.0" },
+      }),
+      {
+        AI: { run: requestAi },
+        SECURITY_EVENTS_QUEUE: {
+          send: vi.fn().mockResolvedValue(undefined),
+        } as unknown as Queue<SecurityEvent>,
+      },
+    );
+    expect(response.status).toBe(404);
+    expect(requestAi).not.toHaveBeenCalled();
   });
 });

@@ -16,6 +16,11 @@ is at least once; event IDs make D1 inserts idempotent. Durable Objects remain
 the source of truth for real-time rate limiting; D1 is only the historical
 event store.
 
+M8 sends only minimized, privacy-safe security-event fields to Workers AI. It
+does not send raw IP addresses, credentials, cookies, bodies, HMAC material,
+or fingerprint inputs. AI output is validated before separate persistence and
+cannot change deterministic enforcement or deploy proposed rules.
+
 Retention is intentionally a future configurable policy, not an indefinite
 retention promise. The `created_at` index supports a later time-based cleanup
 job without changing the event contract.

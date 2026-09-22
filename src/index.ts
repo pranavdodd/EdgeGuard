@@ -1,7 +1,12 @@
 import { mapSecurityEvent } from "./events/mapper";
 import { enqueueSecurityEventBestEffort } from "./events/persistence";
-import { insertSecurityEvent } from "./events/repository";
+import {
+  getThreatAnalysisByEventId,
+  insertSecurityEvent,
+  insertThreatAnalysis,
+} from "./events/repository";
 import type { SecurityEvent } from "./events/types";
+import { analyzeSecurityEvent, type WorkersAiBinding } from "./events/analyst";
 import {
   getSecurityAnalyticsSummary,
   isSecurityEventAction,
@@ -14,6 +19,8 @@ export interface Env {
   FINGERPRINT_SECRET?: string;
   DB?: D1Database;
   ANALYTICS_API_KEY?: string;
+  AI?: WorkersAiBinding;
+  AI_MODEL?: string;
   SECURITY_EVENTS_QUEUE?: Queue<SecurityEvent>;
   RATE_LIMITER?: {
     idFromName: (name: string) => { name: string };
@@ -147,6 +154,24 @@ const handleAnalyticsRequest = async (
         { error: { code: "EDGEGUARD_ANALYTICS_INVALID_FILTER" } },
         400,
       );
+    }
+
+    if (
+      url.pathname === "/api/analytics/analysis" ||
+      url.pathname === "/api/security/analysis"
+    ) {
+      const eventId = url.searchParams.get("eventId")?.trim();
+      if (!eventId || eventId.length > 128) {
+        return analyticsResponse(
+          { error: { code: "EDGEGUARD_ANALYTICS_INVALID_EVENT_ID" } },
+          400,
+        );
+      }
+
+      return analyticsResponse({
+        aiGenerated: true,
+        analysis: await getThreatAnalysisByEventId(env.DB, eventId),
+      });
     }
 
     if (
@@ -590,6 +615,27 @@ const consumeSecurityEvents = async (
       }
 
       await insertSecurityEvent(env.DB, message.body);
+      if (env.AI) {
+        try {
+          const analysis = await analyzeSecurityEvent(
+            env.AI,
+            message.body,
+            env.AI_MODEL,
+          );
+          if (analysis) {
+            await insertThreatAnalysis(env.DB, analysis);
+          }
+        } catch (error) {
+          console.error(
+            JSON.stringify({
+              event: "threat_analysis_failure",
+              eventId: message.body.id,
+              message: "Workers AI analysis failed; base event was preserved.",
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        }
+      }
       message.ack();
     } catch (error) {
       console.error(
@@ -619,8 +665,10 @@ export default {
       request.method === "GET" &&
       (url.pathname === "/api/analytics/events" ||
         url.pathname === "/api/analytics/summary" ||
+        url.pathname === "/api/analytics/analysis" ||
         url.pathname === "/api/security/events" ||
-        url.pathname === "/api/security/summary")
+        url.pathname === "/api/security/summary" ||
+        url.pathname === "/api/security/analysis")
     ) {
       return handleAnalyticsRequest(request, env);
     }

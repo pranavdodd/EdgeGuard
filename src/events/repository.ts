@@ -1,4 +1,5 @@
 import type { SecurityEvent, SecurityEventRow } from "./types";
+import type { ThreatAnalysis } from "./analyst";
 
 const MAX_QUERY_LIMIT = 100;
 
@@ -135,3 +136,57 @@ export const listSecurityEventsByAction = async (
       )
       .bind(action, normalizeLimit(limit)),
   );
+
+export const insertThreatAnalysis = async (
+  db: D1Database,
+  analysis: ThreatAnalysis,
+): Promise<void> => {
+  await db
+    .prepare(
+      `INSERT OR IGNORE INTO threat_analyses (
+        analysis_id, event_id, model, created_at, summary, category,
+        evidence_signal_ids, recommended_action, proposed_rule, confidence, caveats
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      analysis.analysisId,
+      analysis.eventId,
+      analysis.model,
+      analysis.createdAt,
+      analysis.summary,
+      analysis.category,
+      JSON.stringify(analysis.evidenceSignalIds),
+      analysis.recommendedAction,
+      analysis.proposedRule ? JSON.stringify(analysis.proposedRule) : null,
+      analysis.confidence,
+      JSON.stringify(analysis.caveats),
+    )
+    .run();
+};
+
+const analysisFromRow = (row: Record<string, unknown>): ThreatAnalysis => ({
+  analysisId: String(row.analysis_id),
+  eventId: String(row.event_id),
+  model: String(row.model),
+  createdAt: String(row.created_at),
+  summary: String(row.summary),
+  category: String(row.category),
+  evidenceSignalIds: JSON.parse(String(row.evidence_signal_ids)) as string[],
+  recommendedAction: String(row.recommended_action),
+  proposedRule: row.proposed_rule
+    ? (JSON.parse(String(row.proposed_rule)) as ThreatAnalysis["proposedRule"])
+    : null,
+  confidence: row.confidence as ThreatAnalysis["confidence"],
+  caveats: JSON.parse(String(row.caveats)) as string[],
+});
+
+export const getThreatAnalysisByEventId = async (
+  db: D1Database,
+  eventId: string,
+): Promise<ThreatAnalysis | null> => {
+  const row = await db
+    .prepare("SELECT * FROM threat_analyses WHERE event_id = ? LIMIT 1")
+    .bind(eventId)
+    .first<Record<string, unknown>>();
+  return row ? analysisFromRow(row) : null;
+};

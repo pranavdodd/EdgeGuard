@@ -43,6 +43,14 @@ M7 adds authenticated, read-only analytics endpoints. Use a bearer token or
 filters; summaries provide a bounded time window, action counts, average risk
 score, and top paths. Responses are not cached.
 
+## M8: Workers AI Threat Analyst
+
+M8 asynchronously analyzes queued security events with the `AI` Workers AI
+binding and stores validated advisory analyses separately in D1. Analysis is
+available at `/api/analytics/analysis?eventId=...` and is explicitly labeled
+AI-generated. It never decides request enforcement or activates proposed rules;
+AI failures preserve the base event and do not affect request handling.
+
 ## Requirements
 
 - Node.js 20 or newer
