@@ -1,17 +1,16 @@
 # Architecture
 
-## Current milestone: M6
+## Current milestone: M7
 
-The Worker now supports a lightweight reverse proxy capability via the
-`ORIGIN_URL` environment binding. Requests to `/health` still return the
-bootstrap health JSON, while all other requests are forwarded to the configured
-origin server if `ORIGIN_URL` is set.
+The Worker supports a lightweight reverse proxy through the `ORIGIN_URL`
+environment binding. `/health` remains local, while other requests are
+forwarded to the configured origin when present.
 
-If no origin binding is configured, requests without a matching bootstrap route
-still return `404`. This milestone establishes the origin-forwarding layer but
 M2 adds normalized request context and a keyed pseudonymous client ID. M3 adds
-deterministic risk decisions, and M4 adds Durable Object rate limiting. M5
-maps those normalized outcomes into privacy-safe `SecurityEvent` records and
-persists them to D1 on a best-effort basis. D1 is historical storage only; it
-does not participate in real-time decisions or rate limiting. There are still
-no queues, dashboards, or administrative endpoints.
+deterministic risk decisions, M4 adds Durable Object rate limiting, and M5
+maps outcomes into privacy-safe `SecurityEvent` records. M6 adds queue-backed
+asynchronous event persistence. M7 adds authenticated read-only analytics
+routes backed by parameterized D1 queries.
+
+D1 is historical storage only; it does not participate in real-time decisions
+or rate limiting. There are no write-capable administrative endpoints.

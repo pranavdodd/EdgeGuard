@@ -235,3 +235,111 @@ describe("M6 asynchronous security event processing", () => {
     expect(retry).toHaveBeenCalledOnce();
   });
 });
+
+describe("M7 read-only analytics API", () => {
+  const analyticsRow = {
+    id: event.id,
+    created_at: event.createdAt,
+    request_id: event.requestId,
+    client_id: event.clientId,
+    method: event.method,
+    path: event.path,
+    country: event.country,
+    colo: event.colo,
+    asn: event.asn,
+    risk_score: event.riskScore,
+    action: event.action,
+    signal_ids: JSON.stringify(event.signalIds),
+    upstream_status: event.upstreamStatus,
+    duration_ms: event.durationMs,
+    rate_limit_remaining: event.rateLimitRemaining,
+    retry_after_seconds: event.retryAfterSeconds,
+  };
+
+  const db = {
+    prepare: (sql: string) => ({
+      bind: () => ({
+        first: async <T>() =>
+          (sql.includes("COUNT(*)")
+            ? {
+                total_events: 2,
+                average_risk_score: 62.5,
+                allow_count: 1,
+                monitor_count: 0,
+                block_count: 0,
+                rate_limited_count: 1,
+              }
+            : analyticsRow) as T,
+        all: async <T>() =>
+          (sql.includes("GROUP BY path")
+            ? { results: [{ path: "/api/items", count: 2 }] }
+            : { results: [analyticsRow] }) as { results: T[] },
+      }),
+    }),
+  } as unknown as D1Database;
+
+  it("requires the analytics API key without touching D1", async () => {
+    const prepare = vi.fn();
+    const response = await worker.fetch(
+      new Request("https://example.com/api/analytics/events"),
+      {
+        ANALYTICS_API_KEY: "dashboard-secret",
+        DB: { prepare } as unknown as D1Database,
+      },
+    );
+
+    expect(response.status).toBe(401);
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it("lists filtered events and returns aggregate summaries", async () => {
+    const eventsResponse = await worker.fetch(
+      new Request(
+        "https://example.com/api/security/events?action=rate_limited&limit=10",
+        { headers: { authorization: "Bearer dashboard-secret" } },
+      ),
+      { ANALYTICS_API_KEY: "dashboard-secret", DB: db },
+    );
+    const eventsBody = (await eventsResponse.json()) as {
+      events: SecurityEvent[];
+    };
+
+    expect(eventsResponse.status).toBe(200);
+    expect(eventsBody.events[0]?.path).toBe("/api/items");
+    expect(eventsResponse.headers.get("cache-control")).toBe("no-store");
+
+    const summaryResponse = await worker.fetch(
+      new Request("https://example.com/api/analytics/summary?hours=48", {
+        headers: { "x-api-key": "dashboard-secret" },
+      }),
+      { ANALYTICS_API_KEY: "dashboard-secret", DB: db },
+    );
+    const summaryBody = (await summaryResponse.json()) as {
+      summary: {
+        totalEvents: number;
+        averageRiskScore: number;
+        actionCounts: Record<string, number>;
+        topPaths: Array<{ path: string; count: number }>;
+      };
+    };
+
+    expect(summaryResponse.status).toBe(200);
+    expect(summaryBody.summary.totalEvents).toBe(2);
+    expect(summaryBody.summary.averageRiskScore).toBe(62.5);
+    expect(summaryBody.summary.actionCounts.rate_limited).toBe(1);
+    expect(summaryBody.summary.topPaths).toEqual([
+      { path: "/api/items", count: 2 },
+    ]);
+  });
+
+  it("rejects invalid filters", async () => {
+    const response = await worker.fetch(
+      new Request("https://example.com/api/analytics/events?action=unknown", {
+        headers: { "x-api-key": "dashboard-secret" },
+      }),
+      { ANALYTICS_API_KEY: "dashboard-secret", DB: db },
+    );
+
+    expect(response.status).toBe(400);
+  });
+});

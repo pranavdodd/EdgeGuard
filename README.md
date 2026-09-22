@@ -35,6 +35,14 @@ background, acknowledges successful writes, and retries failed messages.
 Security-event inserts are idempotent, so at-least-once queue delivery does not
 duplicate records.
 
+## M7: Read-Only Security Analytics
+
+M7 adds authenticated, read-only analytics endpoints. Use a bearer token or
+`x-api-key` matching `ANALYTICS_API_KEY` with `/api/analytics/events` or
+`/api/analytics/summary`. Event reads support bounded action, client, and limit
+filters; summaries provide a bounded time window, action counts, average risk
+score, and top paths. Responses are not cached.
+
 ## Requirements
 
 - Node.js 20 or newer

@@ -2,11 +2,18 @@ import { mapSecurityEvent } from "./events/mapper";
 import { enqueueSecurityEventBestEffort } from "./events/persistence";
 import { insertSecurityEvent } from "./events/repository";
 import type { SecurityEvent } from "./events/types";
+import {
+  getSecurityAnalyticsSummary,
+  isSecurityEventAction,
+  listAnalyticsEvents,
+  parseSecurityEventQuery,
+} from "./events/analytics";
 
 export interface Env {
   ORIGIN_URL?: string;
   FINGERPRINT_SECRET?: string;
   DB?: D1Database;
+  ANALYTICS_API_KEY?: string;
   SECURITY_EVENTS_QUEUE?: Queue<SecurityEvent>;
   RATE_LIMITER?: {
     idFromName: (name: string) => { name: string };
@@ -93,6 +100,86 @@ const healthResponse = (): Response =>
     status: "ok",
     service: "edgeguard",
   });
+
+const analyticsResponse = (body: unknown, status = 200): Response =>
+  Response.json(body, {
+    status,
+    headers: { "cache-control": "no-store" },
+  });
+
+const isAnalyticsAuthorized = (request: Request, env?: Env): boolean => {
+  const configuredKey = env?.ANALYTICS_API_KEY;
+  if (!configuredKey) {
+    return false;
+  }
+
+  const authorization = request.headers.get("authorization");
+  const bearerKey = authorization?.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length)
+    : null;
+  const presentedKey = bearerKey ?? request.headers.get("x-api-key");
+  return presentedKey === configuredKey;
+};
+
+const handleAnalyticsRequest = async (
+  request: Request,
+  env?: Env,
+): Promise<Response> => {
+  if (!isAnalyticsAuthorized(request, env)) {
+    return analyticsResponse(
+      { error: { code: "EDGEGUARD_ANALYTICS_UNAUTHORIZED" } },
+      401,
+    );
+  }
+
+  if (!env?.DB) {
+    return analyticsResponse(
+      { error: { code: "EDGEGUARD_ANALYTICS_UNAVAILABLE" } },
+      503,
+    );
+  }
+
+  try {
+    const url = new URL(request.url);
+    const action = url.searchParams.get("action");
+    if (action && !isSecurityEventAction(action)) {
+      return analyticsResponse(
+        { error: { code: "EDGEGUARD_ANALYTICS_INVALID_FILTER" } },
+        400,
+      );
+    }
+
+    if (
+      url.pathname === "/api/analytics/events" ||
+      url.pathname === "/api/security/events"
+    ) {
+      return analyticsResponse({
+        events: await listAnalyticsEvents(
+          env.DB,
+          parseSecurityEventQuery(url.searchParams),
+        ),
+      });
+    }
+
+    const requestedHours = Number(url.searchParams.get("hours"));
+    const hours = Number.isFinite(requestedHours) ? requestedHours : 24;
+    return analyticsResponse({
+      summary: await getSecurityAnalyticsSummary(env.DB, new Date(), hours),
+    });
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "security_analytics_failure",
+        message: "Analytics query failed.",
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return analyticsResponse(
+      { error: { code: "EDGEGUARD_ANALYTICS_UNAVAILABLE" } },
+      503,
+    );
+  }
+};
 
 const normalizeText = (
   value: string | null | undefined,
@@ -526,6 +613,16 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/health") {
       return healthResponse();
+    }
+
+    if (
+      request.method === "GET" &&
+      (url.pathname === "/api/analytics/events" ||
+        url.pathname === "/api/analytics/summary" ||
+        url.pathname === "/api/security/events" ||
+        url.pathname === "/api/security/summary")
+    ) {
+      return handleAnalyticsRequest(request, env);
     }
 
     const requestId =
