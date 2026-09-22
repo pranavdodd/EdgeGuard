@@ -1,6 +1,12 @@
 export interface Env {
   ORIGIN_URL?: string;
   FINGERPRINT_SECRET?: string;
+  RATE_LIMITER?: {
+    idFromName: (name: string) => { name: string };
+    get: (id: { name: string }) => {
+      check: (policy?: RateLimitPolicy) => Promise<RateLimitResult>;
+    };
+  };
 }
 
 export interface RequestContext {
@@ -51,6 +57,29 @@ export interface SecurityDecision {
   requestId: string;
   clientId: string;
 }
+
+export interface RateLimitPolicy {
+  limit: number;
+  windowMs: number;
+}
+
+export interface RateLimitState {
+  windowStartMs: number;
+  count: number;
+}
+
+export interface RateLimitResult {
+  allowed: boolean;
+  limit: number;
+  remaining: number;
+  resetAt: number;
+  retryAfterSeconds: number;
+}
+
+export const DEFAULT_RATE_LIMIT_POLICY: RateLimitPolicy = {
+  limit: 60,
+  windowMs: 60_000,
+};
 
 const healthResponse = (): Response =>
   Response.json({
@@ -272,6 +301,118 @@ export const safeSecurityLog = (decision: SecurityDecision): Record<string, unkn
   signals: decision.signals.map((signal) => signal.id),
 });
 
+export const evaluateRateLimit = (
+  state: RateLimitState,
+  nowMs: number,
+  policy: RateLimitPolicy = DEFAULT_RATE_LIMIT_POLICY,
+): RateLimitResult => {
+  const windowStartMs = state.windowStartMs ?? nowMs;
+  const isExpired = nowMs >= windowStartMs + policy.windowMs;
+  const activeWindowStart = isExpired ? nowMs : windowStartMs;
+  const activeCount = isExpired ? 0 : state.count;
+  const allowed = activeCount < policy.limit;
+  const nextCount = allowed ? activeCount + 1 : activeCount;
+  const resetAt = activeWindowStart + policy.windowMs;
+  const remaining = allowed ? Math.max(0, policy.limit - nextCount) : 0;
+
+  return {
+    allowed,
+    limit: policy.limit,
+    remaining,
+    resetAt,
+    retryAfterSeconds: allowed ? 0 : Math.max(1, Math.ceil((resetAt - nowMs) / 1000)),
+  };
+};
+
+export class RateLimiter {
+  constructor(private readonly state: DurableObjectState) {}
+
+  async check(policy: RateLimitPolicy = DEFAULT_RATE_LIMIT_POLICY): Promise<RateLimitResult> {
+    const nowMs = Date.now();
+    const savedState = ((await this.state.storage.get("rate_limit")) as RateLimitState | null) ?? {
+      windowStartMs: nowMs,
+      count: 0,
+    };
+
+    const windowStartMs = savedState.windowStartMs ?? nowMs;
+    const count = savedState.count ?? 0;
+    const isExpired = nowMs >= windowStartMs + policy.windowMs;
+    const activeWindowStart = isExpired ? nowMs : windowStartMs;
+    const activeCount = isExpired ? 0 : count;
+    const result = evaluateRateLimit(
+      { windowStartMs: activeWindowStart, count: activeCount },
+      nowMs,
+      policy,
+    );
+
+    if (result.allowed) {
+      await this.state.storage.put("rate_limit", {
+        windowStartMs: activeWindowStart,
+        count: activeCount + 1,
+      });
+    }
+
+    return result;
+  }
+}
+
+const applyRateLimitSignal = (
+  decision: SecurityDecision,
+  result: RateLimitResult,
+): SecurityDecision => {
+  if (result.allowed) {
+    return decision;
+  }
+
+  return {
+    ...decision,
+    action: "block",
+    score: clampScore(decision.score + 100),
+    signals: [
+      ...decision.signals,
+      {
+        id: "rate_limit_exceeded",
+        weight: 100,
+        reason: "Client exceeded the configured rate limit.",
+      },
+    ],
+  };
+};
+
+const enforceRateLimit = async (
+  request: Request,
+  context: RequestContext,
+  env?: Env,
+): Promise<RateLimitResult | null> => {
+  const limiter = env?.RATE_LIMITER as
+    | undefined
+    | {
+        idFromName: (name: string) => { name: string };
+        get: (id: { name: string }) => { check: (policy?: RateLimitPolicy) => Promise<RateLimitResult> };
+      };
+
+  if (!limiter) {
+    return null;
+  }
+
+  try {
+    const objectId = limiter.idFromName(context.clientId);
+    const stub = limiter.get(objectId);
+    return await stub.check(DEFAULT_RATE_LIMIT_POLICY);
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "rate_limit_failure",
+        requestId: context.requestId,
+        clientId: context.clientId,
+        message: "Limiter infrastructure failure; fail-open policy applied.",
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return null;
+  }
+};
+
 const proxyRequest = async (
   request: Request,
   env?: Env,
@@ -309,7 +450,44 @@ export default {
 
     const requestId = request.headers.get("x-edgeguard-request-id") ?? crypto.randomUUID();
     const context = await buildRequestContext(request, requestId, env);
-    const decision = evaluateSecurityDecision(request, context);
+    const rateLimitResult = await enforceRateLimit(request, context, env);
+    let decision = evaluateSecurityDecision(request, context);
+
+    if (rateLimitResult && !rateLimitResult.allowed) {
+      decision = applyRateLimitSignal(decision, rateLimitResult);
+    }
+
+    if (rateLimitResult && !rateLimitResult.allowed) {
+      console.log(
+        JSON.stringify({
+          event: "rate_limit",
+          requestId: context.requestId,
+          clientId: context.clientId,
+          allowed: false,
+          limit: rateLimitResult.limit,
+          remaining: rateLimitResult.remaining,
+          retryAfterSeconds: rateLimitResult.retryAfterSeconds,
+        }),
+      );
+      console.log(JSON.stringify(safeSecurityLog(decision)));
+      return Response.json(
+        {
+          error: {
+            code: "EDGEGUARD_RATE_LIMITED",
+            message: "Too many requests.",
+            requestId: context.requestId,
+            retryAfterSeconds: rateLimitResult.retryAfterSeconds,
+          },
+        },
+        {
+          status: 429,
+          headers: {
+            "x-edgeguard-request-id": context.requestId,
+            "retry-after": String(rateLimitResult.retryAfterSeconds),
+          },
+        },
+      );
+    }
 
     if (decision.action === "block") {
       console.log(JSON.stringify(safeSecurityLog(decision)));

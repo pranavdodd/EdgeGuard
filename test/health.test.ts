@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import worker, {
   buildRequestContext,
   computeClientId,
+  evaluateRateLimit,
   evaluateSecurityDecision,
   safeRequestLog,
 } from "../src/index";
@@ -318,5 +319,65 @@ describe("M3 deterministic risk engine", () => {
     expect(first.action).toBe("block");
     expect(first.score).toBe(duplicate.score);
     expect(first.action).toBe(duplicate.action);
+  });
+});
+
+describe("M4 rate limiting", () => {
+  it("allows traffic within the fixed window and limits the next request", () => {
+    const policy = { limit: 2, windowMs: 1_000 };
+
+    const first = evaluateRateLimit({ windowStartMs: 0, count: 0 }, 100, policy);
+    const second = evaluateRateLimit({ windowStartMs: 0, count: 1 }, 200, policy);
+    const third = evaluateRateLimit({ windowStartMs: 0, count: 2 }, 300, policy);
+
+    expect(first.allowed).toBe(true);
+    expect(second.allowed).toBe(true);
+    expect(third.allowed).toBe(false);
+    expect(third.remaining).toBe(0);
+    expect(third.retryAfterSeconds).toBeGreaterThan(0);
+  });
+
+  it("returns HTTP 429 with request metadata when a client is rate-limited", async () => {
+    const request = new Request("https://example.com/api/items", {
+      method: "GET",
+      headers: {
+        "user-agent": "Mozilla/5.0",
+        "x-edgeguard-request-id": "req-rate-limited",
+      },
+    });
+
+    const context = await buildRequestContext(request, "req-rate-limited", {
+      FINGERPRINT_SECRET: "test-secret",
+      ORIGIN_URL: "https://example.com",
+    });
+
+    const response = await worker.fetch(request, {
+      FINGERPRINT_SECRET: "test-secret",
+      ORIGIN_URL: "http://127.0.0.1:1",
+      RATE_LIMITER: {
+        idFromName: () => ({ name: context.clientId }),
+        get: () => ({
+          check: async () => ({
+            allowed: false,
+            limit: 2,
+            remaining: 0,
+            resetAt: Date.now() + 1000,
+            retryAfterSeconds: 1,
+          }),
+        }),
+      },
+    });
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("x-edgeguard-request-id")).toBe("req-rate-limited");
+    expect(response.headers.get("retry-after")).toBe("1");
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "EDGEGUARD_RATE_LIMITED",
+        message: "Too many requests.",
+        requestId: "req-rate-limited",
+        retryAfterSeconds: 1,
+      },
+    });
   });
 });
