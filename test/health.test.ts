@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import worker, {
   buildRequestContext,
   computeClientId,
+  evaluateSecurityDecision,
   safeRequestLog,
 } from "../src/index";
 
@@ -198,5 +199,124 @@ describe("M2 request metadata and client identity", () => {
     expect(JSON.stringify(log)).not.toContain("session=abc");
     expect(JSON.stringify(log)).not.toContain("203.0.113.42");
     expect(JSON.stringify(log)).not.toContain("test-secret");
+  });
+});
+
+describe("M3 deterministic risk engine", () => {
+  it("allows clean requests with no risk signals", async () => {
+    const request = new Request("https://example.com/api/items", {
+      method: "GET",
+      headers: {
+        "user-agent": "Mozilla/5.0",
+      },
+    });
+
+    const context = await buildRequestContext(request, "req-clean", {
+      FINGERPRINT_SECRET: "test-secret",
+      ORIGIN_URL: "https://example.com",
+    });
+
+    const decision = evaluateSecurityDecision(request, context);
+
+    expect(decision.action).toBe("allow");
+    expect(decision.score).toBe(0);
+    expect(decision.signals).toEqual([]);
+  });
+
+  it("treats missing user-agent as a weak signal and does not block alone", async () => {
+    const request = new Request("https://example.com/api/items", {
+      method: "GET",
+    });
+
+    const context = await buildRequestContext(request, "req-weak", {
+      FINGERPRINT_SECRET: "test-secret",
+      ORIGIN_URL: "https://example.com",
+    });
+
+    const decision = evaluateSecurityDecision(request, context);
+
+    expect(decision.score).toBe(15);
+    expect(decision.action).toBe("allow");
+    expect(decision.signals.map((signal) => signal.id)).toContain("missing_user_agent");
+  });
+
+  it("blocks sensitive path probes and returns a sanitized 403", async () => {
+    const request = new Request("https://example.com/.env", {
+      method: "GET",
+      headers: {
+        "user-agent": "Mozilla/5.0",
+        "x-edgeguard-request-id": "req-block",
+      },
+    });
+
+    const context = await buildRequestContext(request, "req-block", {
+      FINGERPRINT_SECRET: "test-secret",
+      ORIGIN_URL: "https://example.com",
+    });
+
+    const decision = evaluateSecurityDecision(request, context);
+
+    expect(decision.score).toBeGreaterThanOrEqual(70);
+    expect(decision.action).toBe("block");
+    expect(decision.signals.map((signal) => signal.id)).toContain("sensitive_path_probe");
+
+    const response = await worker.fetch(request, {
+      FINGERPRINT_SECRET: "test-secret",
+      ORIGIN_URL: "http://127.0.0.1:1",
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "EDGEGUARD_BLOCKED",
+        message: "Request blocked by EdgeGuard.",
+        requestId: "req-block",
+      },
+    });
+  });
+
+  it("aggregates multiple signals into a monitor decision", async () => {
+    const request = new Request("https://example.com/..%2F..%2Fadmin", {
+      method: "PROPFIND",
+      headers: {
+        "user-agent": "Mozilla/5.0",
+      },
+    });
+
+    const context = await buildRequestContext(request, "req-monitor", {
+      FINGERPRINT_SECRET: "test-secret",
+      ORIGIN_URL: "https://example.com",
+    });
+
+    const decision = evaluateSecurityDecision(request, context);
+
+    expect(decision.action).toBe("monitor");
+    expect(decision.score).toBeGreaterThanOrEqual(40);
+    expect(decision.score).toBeLessThan(70);
+    expect(decision.signals.map((signal) => signal.id)).toEqual(
+      expect.arrayContaining(["path_traversal_pattern", "uncommon_method"]),
+    );
+  });
+
+  it("clamps risk scores to 100 and does not change the final decision with rule order", async () => {
+    const request = new Request("https://example.com/.env?x=1", {
+      method: "PROPFIND",
+      headers: {
+        "user-agent": "Mozilla/5.0",
+      },
+    });
+
+    const context = await buildRequestContext(request, "req-order", {
+      FINGERPRINT_SECRET: "test-secret",
+      ORIGIN_URL: "https://example.com",
+    });
+
+    const first = evaluateSecurityDecision(request, context);
+    const duplicate = evaluateSecurityDecision(new Request(request.url, request), context);
+
+    expect(first.score).toBe(100);
+    expect(first.action).toBe("block");
+    expect(first.score).toBe(duplicate.score);
+    expect(first.action).toBe(duplicate.action);
   });
 });

@@ -36,13 +36,29 @@ export interface ClientIdentityInput {
   secret: string;
 }
 
+export type SecurityAction = "allow" | "monitor" | "block";
+
+export interface RiskSignal {
+  id: string;
+  weight: number;
+  reason: string;
+}
+
+export interface SecurityDecision {
+  action: SecurityAction;
+  score: number;
+  signals: RiskSignal[];
+  requestId: string;
+  clientId: string;
+}
+
 const healthResponse = (): Response =>
   Response.json({
     status: "ok",
     service: "edgeguard",
   });
 
-const canonicalizeText = (value: string | null | undefined, maxLength = 256): string | null => {
+const normalizeText = (value: string | null | undefined, maxLength = 256): string | null => {
   if (!value) {
     return null;
   }
@@ -77,6 +93,14 @@ const normalizeAcceptLanguage = (request: Request): string | null => {
   return first || null;
 };
 
+const clampScore = (value: number): number => Math.max(0, Math.min(100, value));
+
+const securityThresholds = {
+  allowMax: 39,
+  monitorMax: 69,
+  blockMin: 70,
+};
+
 export const computeClientId = async ({
   ipAddress,
   userAgent,
@@ -85,8 +109,8 @@ export const computeClientId = async ({
 }: ClientIdentityInput): Promise<string> => {
   const fingerprint = [
     ipAddress ?? "unknown",
-    canonicalizeText(userAgent, 128) ?? "unknown",
-    canonicalizeText(acceptLanguage, 64) ?? "unknown",
+    normalizeText(userAgent, 128) ?? "unknown",
+    normalizeText(acceptLanguage, 64) ?? "unknown",
   ].join("|");
 
   const key = await crypto.subtle.importKey(
@@ -163,6 +187,91 @@ export const safeRequestLog = (
   durationMs,
 });
 
+const evaluateRuleSignals = (request: Request, context: RequestContext): RiskSignal[] => {
+  const path = context.path.toLowerCase();
+  const method = context.method.toUpperCase();
+  const signals: RiskSignal[] = [];
+
+  if (!context.userAgentPresent) {
+    signals.push({
+      id: "missing_user_agent",
+      weight: 15,
+      reason: "Request is missing a User-Agent header.",
+    });
+  }
+
+  const commonMethods = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]);
+  if (!commonMethods.has(method)) {
+    signals.push({
+      id: "uncommon_method",
+      weight: 10,
+      reason: `HTTP method ${method} is outside the standard allowlist.`,
+    });
+  }
+
+  if (/\.(env|git|gitignore|pem|key|ini|cfg|conf|aws|json|yaml|yml)$/.test(path) || path.includes("/.git") || path.includes("/.env")) {
+    signals.push({
+      id: "sensitive_path_probe",
+      weight: 100,
+      reason: "Sensitive configuration path detected.",
+    });
+  }
+
+  const decodedUrl = decodeURIComponent(request.url).toLowerCase();
+  const rawUrl = request.url.toLowerCase();
+  const traversalPattern = /(?:\.\.\/|\.\.\\|%2e%2e%2f|%2e%2e%5c|\.\.%2f|\.\.%5c)/i;
+  if (traversalPattern.test(rawUrl) || traversalPattern.test(decodedUrl)) {
+    signals.push({
+      id: "path_traversal_pattern",
+      weight: 50,
+      reason: "Traversal sequence detected in the request path.",
+    });
+  }
+
+  const oversizedPathLength = path.length > 128 || request.url.length > 2048;
+  if (oversizedPathLength) {
+    signals.push({
+      id: "oversized_path",
+      weight: 20,
+      reason: "Request path exceeds the expected safe length.",
+    });
+  }
+
+  return signals;
+};
+
+export const evaluateSecurityDecision = (
+  request: Request,
+  context: RequestContext,
+): SecurityDecision => {
+  const signals = evaluateRuleSignals(request, context);
+  const score = clampScore(signals.reduce((total, signal) => total + signal.weight, 0));
+
+  let action: SecurityAction = "allow";
+  if (score >= securityThresholds.blockMin) {
+    action = "block";
+  } else if (score >= securityThresholds.allowMax + 1) {
+    action = "monitor";
+  }
+
+  return {
+    action,
+    score,
+    signals,
+    requestId: context.requestId,
+    clientId: context.clientId,
+  };
+};
+
+export const safeSecurityLog = (decision: SecurityDecision): Record<string, unknown> => ({
+  event: "security_decision",
+  requestId: decision.requestId,
+  clientId: decision.clientId,
+  riskScore: decision.score,
+  action: decision.action,
+  signals: decision.signals.map((signal) => signal.id),
+});
+
 const proxyRequest = async (
   request: Request,
   env?: Env,
@@ -200,17 +309,34 @@ export default {
 
     const requestId = request.headers.get("x-edgeguard-request-id") ?? crypto.randomUUID();
     const context = await buildRequestContext(request, requestId, env);
-    const startedAt = Date.now();
+    const decision = evaluateSecurityDecision(request, context);
 
+    if (decision.action === "block") {
+      console.log(JSON.stringify(safeSecurityLog(decision)));
+      return Response.json(
+        {
+          error: {
+            code: "EDGEGUARD_BLOCKED",
+            message: "Request blocked by EdgeGuard.",
+            requestId: context.requestId,
+          },
+        },
+        { status: 403 },
+      );
+    }
+
+    const startedAt = Date.now();
     const proxiedResponse = await proxyRequest(request, env, requestId);
     const durationMs = Date.now() - startedAt;
 
     if (proxiedResponse !== null) {
       console.log(JSON.stringify(safeRequestLog(context, proxiedResponse.status, durationMs)));
+      console.log(JSON.stringify(safeSecurityLog(decision)));
       return proxiedResponse;
     }
 
     console.log(JSON.stringify(safeRequestLog(context, 404, durationMs)));
+    console.log(JSON.stringify(safeSecurityLog(decision)));
     return Response.json({ error: "not_found" }, { status: 404 });
   },
 } satisfies ExportedHandler<Env>;
