@@ -108,6 +108,32 @@ const healthResponse = (): Response =>
     service: "edgeguard",
   });
 
+export const validateOriginUrl = (originUrl: string): URL | null => {
+  try {
+    const origin = new URL(originUrl);
+    if (
+      !["http:", "https:"].includes(origin.protocol) ||
+      !origin.hostname ||
+      origin.username ||
+      origin.password ||
+      origin.search ||
+      origin.hash
+    ) {
+      return null;
+    }
+
+    return origin;
+  } catch {
+    return null;
+  }
+};
+
+const configurationErrorResponse = (): Response =>
+  Response.json(
+    { error: { code: "EDGEGUARD_INVALID_CONFIGURATION" } },
+    { status: 500 },
+  );
+
 const analyticsResponse = (body: unknown, status = 200): Response =>
   Response.json(body, {
     status,
@@ -579,7 +605,10 @@ const proxyRequest = async (
     return null;
   }
 
-  const origin = new URL(env.ORIGIN_URL);
+  const origin = validateOriginUrl(env.ORIGIN_URL);
+  if (!origin) {
+    throw new Error("ORIGIN_URL is invalid");
+  }
   const target = new URL(request.url);
 
   target.protocol = origin.protocol;
@@ -610,6 +639,15 @@ const consumeSecurityEvents = async (
 ): Promise<void> => {
   for (const message of batch.messages) {
     try {
+      if (
+        !message.body ||
+        typeof message.body.id !== "string" ||
+        typeof message.body.requestId !== "string" ||
+        typeof message.body.clientId !== "string"
+      ) {
+        throw new Error("Malformed security event message");
+      }
+
       if (!env.DB) {
         throw new Error("D1 binding is not configured");
       }
@@ -659,6 +697,10 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/health") {
       return healthResponse();
+    }
+
+    if (env?.ORIGIN_URL && !validateOriginUrl(env.ORIGIN_URL)) {
+      return configurationErrorResponse();
     }
 
     if (
@@ -750,7 +792,34 @@ export default {
     }
 
     const startedAt = Date.now();
-    const proxiedResponse = await proxyRequest(request, env, requestId);
+    let proxiedResponse: Response | null = null;
+    try {
+      proxiedResponse = await proxyRequest(request, env, requestId);
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "origin_failure",
+          requestId: context.requestId,
+          clientId: context.clientId,
+          message: "Origin request failed; gateway returned 502.",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      await recordSecurityEvent(
+        env,
+        mapSecurityEvent({
+          context,
+          decision,
+          rateLimit: rateLimitResult,
+          upstreamStatus: null,
+          durationMs: Date.now() - startedAt,
+        }),
+      );
+      return Response.json(
+        { error: { code: "EDGEGUARD_ORIGIN_UNAVAILABLE" } },
+        { status: 502 },
+      );
+    }
     const durationMs = Date.now() - startedAt;
 
     if (proxiedResponse !== null) {

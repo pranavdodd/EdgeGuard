@@ -15,3 +15,11 @@ analysis with separate validated persistence; it is advisory only.
 
 D1 is historical storage only; it does not participate in real-time decisions
 or rate limiting. There are no write-capable administrative endpoints.
+
+## Trust Boundaries
+
+Client requests cross into deterministic Worker enforcement. The configured
+origin is an operator-controlled binding, not a request parameter. Queue and D1
+are asynchronous historical-processing boundaries. Workers AI receives only
+minimized event fields and produces advisory output; it cannot block requests
+or activate rules. Analytics routes are separately authenticated.

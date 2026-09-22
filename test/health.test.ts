@@ -6,6 +6,7 @@ import worker, {
   evaluateRateLimit,
   evaluateSecurityDecision,
   safeRequestLog,
+  validateOriginUrl,
 } from "../src/index";
 
 describe("GET /health", () => {
@@ -94,6 +95,30 @@ describe("M1 proxy forwarding", () => {
       url: "/api/v1/users?active=true",
       header: "edgeguard",
       body: '{"ok":true}',
+    });
+  });
+
+  it("rejects origin credentials and invalid protocols", async () => {
+    expect(validateOriginUrl("https://user:pass@example.com")).toBeNull();
+    expect(validateOriginUrl("ftp://example.com")).toBeNull();
+
+    const response = await worker.fetch(new Request("http://localhost/api"), {
+      ORIGIN_URL: "https://user:pass@example.com",
+    });
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "EDGEGUARD_INVALID_CONFIGURATION" },
+    });
+  });
+
+  it("returns a sanitized 502 when the origin is unavailable", async () => {
+    const response = await worker.fetch(new Request("http://localhost/api"), {
+      ORIGIN_URL: "http://127.0.0.1:1",
+    });
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "EDGEGUARD_ORIGIN_UNAVAILABLE" },
     });
   });
 });

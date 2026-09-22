@@ -463,4 +463,21 @@ describe("M8 Workers AI threat analyst", () => {
     expect(response.status).toBe(404);
     expect(requestAi).not.toHaveBeenCalled();
   });
+
+  it("retries malformed queue messages without persisting them", async () => {
+    const prepare = vi.fn();
+    const ack = vi.fn();
+    const retry = vi.fn();
+
+    await worker.queue?.(
+      {
+        messages: [{ body: {} as SecurityEvent, ack, retry }],
+      } as unknown as MessageBatch<SecurityEvent>,
+      { DB: { prepare } as unknown as D1Database },
+    );
+
+    expect(prepare).not.toHaveBeenCalled();
+    expect(ack).not.toHaveBeenCalled();
+    expect(retry).toHaveBeenCalledOnce();
+  });
 });

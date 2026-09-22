@@ -51,6 +51,13 @@ available at `/api/analytics/analysis?eventId=...` and is explicitly labeled
 AI-generated. It never decides request enforcement or activates proposed rules;
 AI failures preserve the base event and do not affect request handling.
 
+## M9: Production Hardening and Release
+
+M9 validates configured origins, returns sanitized upstream-failure responses,
+adds CI/build checks, and provides reproducible local benchmarks. See
+[BENCHMARKS.md](BENCHMARKS.md) for measured results and [DEMO.md](DEMO.md) for
+the safe local demonstration flow.
+
 ## Requirements
 
 - Node.js 20 or newer
