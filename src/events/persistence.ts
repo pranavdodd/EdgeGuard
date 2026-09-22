@@ -1,6 +1,30 @@
 import { insertSecurityEvent } from "./repository";
 import type { SecurityEvent } from "./types";
 
+export const enqueueSecurityEventBestEffort = async (
+  queue: Queue<SecurityEvent> | undefined,
+  event: SecurityEvent,
+): Promise<void> => {
+  if (!queue) {
+    return;
+  }
+
+  try {
+    await queue.send(event);
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "security_event_queue_failure",
+        requestId: event.requestId,
+        clientId: event.clientId,
+        message:
+          "Security event queue submission failed; request outcome preserved.",
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
+};
+
 export const persistSecurityEventBestEffort = async (
   db: D1Database | undefined,
   event: SecurityEvent,

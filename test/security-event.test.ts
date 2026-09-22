@@ -175,3 +175,63 @@ describe("M5 persistence failure isolation", () => {
     expect(limited.status).toBe(429);
   });
 });
+
+describe("M6 asynchronous security event processing", () => {
+  it("queues events without touching D1 during request handling", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const prepare = vi.fn();
+    const response = await worker.fetch(
+      new Request("https://example.com/api/items", {
+        headers: { "user-agent": "Mozilla/5.0" },
+      }),
+      {
+        DB: { prepare } as unknown as D1Database,
+        SECURITY_EVENTS_QUEUE: { send } as unknown as Queue<SecurityEvent>,
+      },
+    );
+
+    expect(response.status).toBe(404);
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0]?.[0]).toMatchObject({
+      requestId: expect.any(String),
+      action: "allow",
+      path: "/api/items",
+    });
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it("acks successfully persisted messages and retries failed messages", async () => {
+    const ack = vi.fn();
+    const retry = vi.fn();
+    const run = vi.fn().mockResolvedValue({});
+    const db = {
+      prepare: () => ({
+        bind: () => ({ run }),
+      }),
+    } as unknown as D1Database;
+
+    await worker.queue?.(
+      {
+        messages: [{ body: event, ack, retry }],
+      } as unknown as MessageBatch<SecurityEvent>,
+      { DB: db },
+    );
+
+    expect(run).toHaveBeenCalledOnce();
+    expect(ack).toHaveBeenCalledOnce();
+    expect(retry).not.toHaveBeenCalled();
+
+    const failingBatch = {
+      messages: [{ body: event, ack, retry }],
+    } as unknown as MessageBatch<SecurityEvent>;
+    const failingDb = {
+      prepare: () => {
+        throw new Error("D1 unavailable");
+      },
+    } as unknown as D1Database;
+
+    await worker.queue?.(failingBatch, { DB: failingDb });
+
+    expect(retry).toHaveBeenCalledOnce();
+  });
+});

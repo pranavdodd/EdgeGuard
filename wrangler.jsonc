@@ -23,4 +23,18 @@
       "database_name": "edgeguard",
     },
   ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "SECURITY_EVENTS_QUEUE",
+        "queue": "edgeguard-security-events",
+      },
+    ],
+    "consumers": [
+      {
+        "queue": "edgeguard-security-events",
+        "max_batch_size": 10,
+      },
+    ],
+  },
 }

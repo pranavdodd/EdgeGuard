@@ -1,10 +1,13 @@
 import { mapSecurityEvent } from "./events/mapper";
-import { persistSecurityEventBestEffort } from "./events/persistence";
+import { enqueueSecurityEventBestEffort } from "./events/persistence";
+import { insertSecurityEvent } from "./events/repository";
+import type { SecurityEvent } from "./events/types";
 
 export interface Env {
   ORIGIN_URL?: string;
   FINGERPRINT_SECRET?: string;
   DB?: D1Database;
+  SECURITY_EVENTS_QUEUE?: Queue<SecurityEvent>;
   RATE_LIMITER?: {
     idFromName: (name: string) => { name: string };
     get: (id: { name: string }) => {
@@ -482,6 +485,41 @@ const proxyRequest = async (
   return fetch(new Request(proxiedRequest, { headers }));
 };
 
+const recordSecurityEvent = async (
+  env: Env | undefined,
+  event: SecurityEvent,
+): Promise<void> => {
+  await enqueueSecurityEventBestEffort(env?.SECURITY_EVENTS_QUEUE, event);
+};
+
+const consumeSecurityEvents = async (
+  batch: MessageBatch<SecurityEvent>,
+  env: Env,
+): Promise<void> => {
+  for (const message of batch.messages) {
+    try {
+      if (!env.DB) {
+        throw new Error("D1 binding is not configured");
+      }
+
+      await insertSecurityEvent(env.DB, message.body);
+      message.ack();
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "security_event_consumer_failure",
+          requestId: message.body.requestId,
+          clientId: message.body.clientId,
+          message:
+            "Security event persistence failed; queue message will retry.",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      message.retry();
+    }
+  }
+};
+
 export default {
   async fetch(request: Request, env?: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -513,8 +551,8 @@ export default {
         }),
       );
       console.log(JSON.stringify(safeSecurityLog(decision)));
-      await persistSecurityEventBestEffort(
-        env?.DB,
+      await recordSecurityEvent(
+        env,
         mapSecurityEvent({
           context,
           decision,
@@ -544,8 +582,8 @@ export default {
 
     if (decision.action === "block") {
       console.log(JSON.stringify(safeSecurityLog(decision)));
-      await persistSecurityEventBestEffort(
-        env?.DB,
+      await recordSecurityEvent(
+        env,
         mapSecurityEvent({
           context,
           decision,
@@ -577,8 +615,8 @@ export default {
         ),
       );
       console.log(JSON.stringify(safeSecurityLog(decision)));
-      await persistSecurityEventBestEffort(
-        env?.DB,
+      await recordSecurityEvent(
+        env,
         mapSecurityEvent({
           context,
           decision,
@@ -592,8 +630,8 @@ export default {
 
     console.log(JSON.stringify(safeRequestLog(context, 404, durationMs)));
     console.log(JSON.stringify(safeSecurityLog(decision)));
-    await persistSecurityEventBestEffort(
-      env?.DB,
+    await recordSecurityEvent(
+      env,
       mapSecurityEvent({
         context,
         decision,
@@ -604,4 +642,7 @@ export default {
     );
     return Response.json({ error: "not_found" }, { status: 404 });
   },
-} satisfies ExportedHandler<Env>;
+  async queue(batch: MessageBatch<SecurityEvent>, env: Env): Promise<void> {
+    await consumeSecurityEvents(batch, env);
+  },
+} satisfies ExportedHandler<Env, SecurityEvent>;

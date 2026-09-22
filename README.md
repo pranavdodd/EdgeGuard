@@ -27,6 +27,14 @@ Objects continue to own rate limiting.
 
 See [SECURITY.md](SECURITY.md) for storage exclusions and retention assumptions.
 
+## M6: Asynchronous Security Event Processing
+
+M6 sends privacy-safe security events to the `SECURITY_EVENTS_QUEUE` Cloudflare
+Queue from the request path. The queue consumer persists events to D1 in the
+background, acknowledges successful writes, and retries failed messages.
+Security-event inserts are idempotent, so at-least-once queue delivery does not
+duplicate records.
+
 ## Requirements
 
 - Node.js 20 or newer

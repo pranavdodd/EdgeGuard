@@ -1,6 +1,6 @@
 # Architecture
 
-## Current milestone: M5
+## Current milestone: M6
 
 The Worker now supports a lightweight reverse proxy capability via the
 `ORIGIN_URL` environment binding. Requests to `/health` still return the

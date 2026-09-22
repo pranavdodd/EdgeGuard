@@ -50,7 +50,7 @@ export const insertSecurityEvent = async (
 ): Promise<void> => {
   await db
     .prepare(
-      `INSERT INTO security_events (
+      `INSERT OR IGNORE INTO security_events (
         id, created_at, request_id, client_id, method, path, country, colo, asn,
         risk_score, action, signal_ids, upstream_status, duration_ms,
         rate_limit_remaining, retry_after_seconds
