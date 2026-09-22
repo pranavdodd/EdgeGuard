@@ -8,7 +8,10 @@ const healthResponse = (): Response =>
     service: "edgeguard",
   });
 
-const proxyRequest = (request: Request, env?: Env): Response | null => {
+const proxyRequest = (
+  request: Request,
+  env?: Env,
+): Response | Promise<Response> | null => {
   if (!env?.ORIGIN_URL) {
     return null;
   }
@@ -29,7 +32,7 @@ const proxyRequest = (request: Request, env?: Env): Response | null => {
 };
 
 export default {
-  fetch(request: Request, env: Env): Response {
+  fetch(request: Request, env?: Env): Response | Promise<Response> {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/health") {
@@ -37,7 +40,7 @@ export default {
     }
 
     const proxiedResponse = proxyRequest(request, env);
-    if (proxiedResponse) {
+    if (proxiedResponse !== null) {
       return proxiedResponse;
     }
 

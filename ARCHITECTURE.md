@@ -1,10 +1,13 @@
 # Architecture
 
-## Current milestone: M0
+## Current milestone: M1
 
-The project currently contains a single Cloudflare Worker entrypoint. It owns
-only bootstrap routing: `GET /health` returns a JSON status response and all
-other routes return `404`.
+The Worker now supports a lightweight reverse proxy capability via the
+`ORIGIN_URL` environment binding. Requests to `/health` still return the
+bootstrap health JSON, while all other requests are forwarded to the configured
+origin server if `ORIGIN_URL` is set.
 
-No origin forwarding, security decisions, storage, queues, or administrative
-endpoints are included until their respective milestones are reached.
+If no origin binding is configured, requests without a matching bootstrap route
+still return `404`. This milestone establishes the origin-forwarding layer but
+does not yet include security decisions, storage, queues, or administrative
+endpoints.
