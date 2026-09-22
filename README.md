@@ -17,6 +17,16 @@ proxying.
 
 Later milestones add security decisions and gateway policies.
 
+## M5: Security Event Persistence
+
+M5 adds a privacy-safe, best-effort security-event history in Cloudflare D1.
+Events record normalized request context, risk outcomes, proxy status, and rate
+limit metadata without storing raw IPs, credentials, cookies, bodies, secrets,
+or query strings. D1 is not part of the real-time enforcement path; Durable
+Objects continue to own rate limiting.
+
+See [SECURITY.md](SECURITY.md) for storage exclusions and retention assumptions.
+
 ## Requirements
 
 - Node.js 20 or newer

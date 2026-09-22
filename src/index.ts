@@ -1,6 +1,10 @@
+import { mapSecurityEvent } from "./events/mapper";
+import { persistSecurityEventBestEffort } from "./events/persistence";
+
 export interface Env {
   ORIGIN_URL?: string;
   FINGERPRINT_SECRET?: string;
+  DB?: D1Database;
   RATE_LIMITER?: {
     idFromName: (name: string) => { name: string };
     get: (id: { name: string }) => {
@@ -87,7 +91,10 @@ const healthResponse = (): Response =>
     service: "edgeguard",
   });
 
-const normalizeText = (value: string | null | undefined, maxLength = 256): string | null => {
+const normalizeText = (
+  value: string | null | undefined,
+  maxLength = 256,
+): string | null => {
   if (!value) {
     return null;
   }
@@ -150,7 +157,11 @@ export const computeClientId = async ({
     ["sign"],
   );
 
-  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(fingerprint));
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(fingerprint),
+  );
   return Array.from(new Uint8Array(signature))
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
@@ -176,7 +187,8 @@ export const buildRequestContext = async (
   const acceptLanguage = normalizeAcceptLanguage(request);
   const country = requestWithCf.cf?.country ?? null;
   const colo = requestWithCf.cf?.colo ?? null;
-  const asn = typeof requestWithCf.cf?.asn === "number" ? requestWithCf.cf.asn : null;
+  const asn =
+    typeof requestWithCf.cf?.asn === "number" ? requestWithCf.cf.asn : null;
 
   const clientId = await computeClientId({
     ipAddress,
@@ -216,7 +228,10 @@ export const safeRequestLog = (
   durationMs,
 });
 
-const evaluateRuleSignals = (request: Request, context: RequestContext): RiskSignal[] => {
+const evaluateRuleSignals = (
+  request: Request,
+  context: RequestContext,
+): RiskSignal[] => {
   const path = context.path.toLowerCase();
   const method = context.method.toUpperCase();
   const signals: RiskSignal[] = [];
@@ -229,7 +244,15 @@ const evaluateRuleSignals = (request: Request, context: RequestContext): RiskSig
     });
   }
 
-  const commonMethods = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]);
+  const commonMethods = new Set([
+    "GET",
+    "POST",
+    "PUT",
+    "PATCH",
+    "DELETE",
+    "HEAD",
+    "OPTIONS",
+  ]);
   if (!commonMethods.has(method)) {
     signals.push({
       id: "uncommon_method",
@@ -238,7 +261,13 @@ const evaluateRuleSignals = (request: Request, context: RequestContext): RiskSig
     });
   }
 
-  if (/\.(env|git|gitignore|pem|key|ini|cfg|conf|aws|json|yaml|yml)$/.test(path) || path.includes("/.git") || path.includes("/.env")) {
+  if (
+    /\.(env|git|gitignore|pem|key|ini|cfg|conf|aws|json|yaml|yml)$/.test(
+      path,
+    ) ||
+    path.includes("/.git") ||
+    path.includes("/.env")
+  ) {
     signals.push({
       id: "sensitive_path_probe",
       weight: 100,
@@ -248,7 +277,8 @@ const evaluateRuleSignals = (request: Request, context: RequestContext): RiskSig
 
   const decodedUrl = decodeURIComponent(request.url).toLowerCase();
   const rawUrl = request.url.toLowerCase();
-  const traversalPattern = /(?:\.\.\/|\.\.\\|%2e%2e%2f|%2e%2e%5c|\.\.%2f|\.\.%5c)/i;
+  const traversalPattern =
+    /(?:\.\.\/|\.\.\\|%2e%2e%2f|%2e%2e%5c|\.\.%2f|\.\.%5c)/i;
   if (traversalPattern.test(rawUrl) || traversalPattern.test(decodedUrl)) {
     signals.push({
       id: "path_traversal_pattern",
@@ -274,7 +304,9 @@ export const evaluateSecurityDecision = (
   context: RequestContext,
 ): SecurityDecision => {
   const signals = evaluateRuleSignals(request, context);
-  const score = clampScore(signals.reduce((total, signal) => total + signal.weight, 0));
+  const score = clampScore(
+    signals.reduce((total, signal) => total + signal.weight, 0),
+  );
 
   let action: SecurityAction = "allow";
   if (score >= securityThresholds.blockMin) {
@@ -292,7 +324,9 @@ export const evaluateSecurityDecision = (
   };
 };
 
-export const safeSecurityLog = (decision: SecurityDecision): Record<string, unknown> => ({
+export const safeSecurityLog = (
+  decision: SecurityDecision,
+): Record<string, unknown> => ({
   event: "security_decision",
   requestId: decision.requestId,
   clientId: decision.clientId,
@@ -320,16 +354,22 @@ export const evaluateRateLimit = (
     limit: policy.limit,
     remaining,
     resetAt,
-    retryAfterSeconds: allowed ? 0 : Math.max(1, Math.ceil((resetAt - nowMs) / 1000)),
+    retryAfterSeconds: allowed
+      ? 0
+      : Math.max(1, Math.ceil((resetAt - nowMs) / 1000)),
   };
 };
 
 export class RateLimiter {
   constructor(private readonly state: DurableObjectState) {}
 
-  async check(policy: RateLimitPolicy = DEFAULT_RATE_LIMIT_POLICY): Promise<RateLimitResult> {
+  async check(
+    policy: RateLimitPolicy = DEFAULT_RATE_LIMIT_POLICY,
+  ): Promise<RateLimitResult> {
     const nowMs = Date.now();
-    const savedState = ((await this.state.storage.get("rate_limit")) as RateLimitState | null) ?? {
+    const savedState = ((await this.state.storage.get(
+      "rate_limit",
+    )) as RateLimitState | null) ?? {
       windowStartMs: nowMs,
       count: 0,
     };
@@ -388,7 +428,9 @@ const enforceRateLimit = async (
     | undefined
     | {
         idFromName: (name: string) => { name: string };
-        get: (id: { name: string }) => { check: (policy?: RateLimitPolicy) => Promise<RateLimitResult> };
+        get: (id: { name: string }) => {
+          check: (policy?: RateLimitPolicy) => Promise<RateLimitResult>;
+        };
       };
 
   if (!limiter) {
@@ -448,7 +490,8 @@ export default {
       return healthResponse();
     }
 
-    const requestId = request.headers.get("x-edgeguard-request-id") ?? crypto.randomUUID();
+    const requestId =
+      request.headers.get("x-edgeguard-request-id") ?? crypto.randomUUID();
     const context = await buildRequestContext(request, requestId, env);
     const rateLimitResult = await enforceRateLimit(request, context, env);
     let decision = evaluateSecurityDecision(request, context);
@@ -470,6 +513,16 @@ export default {
         }),
       );
       console.log(JSON.stringify(safeSecurityLog(decision)));
+      await persistSecurityEventBestEffort(
+        env?.DB,
+        mapSecurityEvent({
+          context,
+          decision,
+          rateLimit: rateLimitResult,
+          upstreamStatus: null,
+          durationMs: null,
+        }),
+      );
       return Response.json(
         {
           error: {
@@ -491,6 +544,16 @@ export default {
 
     if (decision.action === "block") {
       console.log(JSON.stringify(safeSecurityLog(decision)));
+      await persistSecurityEventBestEffort(
+        env?.DB,
+        mapSecurityEvent({
+          context,
+          decision,
+          rateLimit: rateLimitResult,
+          upstreamStatus: null,
+          durationMs: null,
+        }),
+      );
       return Response.json(
         {
           error: {
@@ -508,13 +571,37 @@ export default {
     const durationMs = Date.now() - startedAt;
 
     if (proxiedResponse !== null) {
-      console.log(JSON.stringify(safeRequestLog(context, proxiedResponse.status, durationMs)));
+      console.log(
+        JSON.stringify(
+          safeRequestLog(context, proxiedResponse.status, durationMs),
+        ),
+      );
       console.log(JSON.stringify(safeSecurityLog(decision)));
+      await persistSecurityEventBestEffort(
+        env?.DB,
+        mapSecurityEvent({
+          context,
+          decision,
+          rateLimit: rateLimitResult,
+          upstreamStatus: proxiedResponse.status,
+          durationMs,
+        }),
+      );
       return proxiedResponse;
     }
 
     console.log(JSON.stringify(safeRequestLog(context, 404, durationMs)));
     console.log(JSON.stringify(safeSecurityLog(decision)));
+    await persistSecurityEventBestEffort(
+      env?.DB,
+      mapSecurityEvent({
+        context,
+        decision,
+        rateLimit: rateLimitResult,
+        upstreamStatus: null,
+        durationMs: null,
+      }),
+    );
     return Response.json({ error: "not_found" }, { status: 404 });
   },
 } satisfies ExportedHandler<Env>;

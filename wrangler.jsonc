@@ -7,14 +7,20 @@
     "bindings": [
       {
         "name": "RATE_LIMITER",
-        "class_name": "RateLimiter"
-      }
-    ]
+        "class_name": "RateLimiter",
+      },
+    ],
   },
   "migrations": [
     {
       "tag": "v1",
-      "new_sqlite_classes": ["RateLimiter"]
-    }
-  ]
+      "new_sqlite_classes": ["RateLimiter"],
+    },
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "edgeguard",
+    },
+  ],
 }

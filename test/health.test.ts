@@ -238,7 +238,9 @@ describe("M3 deterministic risk engine", () => {
 
     expect(decision.score).toBe(15);
     expect(decision.action).toBe("allow");
-    expect(decision.signals.map((signal) => signal.id)).toContain("missing_user_agent");
+    expect(decision.signals.map((signal) => signal.id)).toContain(
+      "missing_user_agent",
+    );
   });
 
   it("blocks sensitive path probes and returns a sanitized 403", async () => {
@@ -259,7 +261,9 @@ describe("M3 deterministic risk engine", () => {
 
     expect(decision.score).toBeGreaterThanOrEqual(70);
     expect(decision.action).toBe("block");
-    expect(decision.signals.map((signal) => signal.id)).toContain("sensitive_path_probe");
+    expect(decision.signals.map((signal) => signal.id)).toContain(
+      "sensitive_path_probe",
+    );
 
     const response = await worker.fetch(request, {
       FINGERPRINT_SECRET: "test-secret",
@@ -313,7 +317,10 @@ describe("M3 deterministic risk engine", () => {
     });
 
     const first = evaluateSecurityDecision(request, context);
-    const duplicate = evaluateSecurityDecision(new Request(request.url, request), context);
+    const duplicate = evaluateSecurityDecision(
+      new Request(request.url, request),
+      context,
+    );
 
     expect(first.score).toBe(100);
     expect(first.action).toBe("block");
@@ -326,9 +333,21 @@ describe("M4 rate limiting", () => {
   it("allows traffic within the fixed window and limits the next request", () => {
     const policy = { limit: 2, windowMs: 1_000 };
 
-    const first = evaluateRateLimit({ windowStartMs: 0, count: 0 }, 100, policy);
-    const second = evaluateRateLimit({ windowStartMs: 0, count: 1 }, 200, policy);
-    const third = evaluateRateLimit({ windowStartMs: 0, count: 2 }, 300, policy);
+    const first = evaluateRateLimit(
+      { windowStartMs: 0, count: 0 },
+      100,
+      policy,
+    );
+    const second = evaluateRateLimit(
+      { windowStartMs: 0, count: 1 },
+      200,
+      policy,
+    );
+    const third = evaluateRateLimit(
+      { windowStartMs: 0, count: 2 },
+      300,
+      policy,
+    );
 
     expect(first.allowed).toBe(true);
     expect(second.allowed).toBe(true);
@@ -369,7 +388,9 @@ describe("M4 rate limiting", () => {
     });
 
     expect(response.status).toBe(429);
-    expect(response.headers.get("x-edgeguard-request-id")).toBe("req-rate-limited");
+    expect(response.headers.get("x-edgeguard-request-id")).toBe(
+      "req-rate-limited",
+    );
     expect(response.headers.get("retry-after")).toBe("1");
     await expect(response.json()).resolves.toMatchObject({
       error: {
