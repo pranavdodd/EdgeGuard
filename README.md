@@ -76,3 +76,8 @@ npm run dev
 
 With the development server running, request `http://localhost:8787/health`.
 It returns JSON with HTTP status `200`.
+
+Open `http://localhost:8787/dashboard` for the visual dashboard. Enter the
+analytics key in the page; it is kept in memory and sent only as a request
+header. The deployed dashboard is available at
+`https://edgeguard.pranavdodda3.workers.dev/dashboard`.

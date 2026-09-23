@@ -9,6 +9,8 @@
 5. Request `/.env` and verify the deterministic `403` response.
 6. Configure `ANALYTICS_API_KEY`, then query the protected analytics endpoints.
 7. Run the benchmark with `npm run benchmark -- http://127.0.0.1:8787`.
+8. Open `/dashboard` and enter the analytics key to view event counts, risk,
+   recent events, top paths, and the AI-analysis label.
 
 Production deployments must use a fixed, reviewed `ORIGIN_URL`; do not expose a
 user-controlled proxy target. Analytics credentials and fingerprint material

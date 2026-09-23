@@ -13,6 +13,7 @@ import {
   listAnalyticsEvents,
   parseSecurityEventQuery,
 } from "./events/analytics";
+import { dashboardResponse } from "./dashboard";
 
 export interface Env {
   ORIGIN_URL?: string;
@@ -697,6 +698,10 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/health") {
       return healthResponse();
+    }
+
+    if (request.method === "GET" && url.pathname === "/dashboard") {
+      return dashboardResponse();
     }
 
     if (env?.ORIGIN_URL && !validateOriginUrl(env.ORIGIN_URL)) {

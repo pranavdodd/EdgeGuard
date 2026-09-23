@@ -21,6 +21,7 @@
     {
       "binding": "DB",
       "database_name": "edgeguard",
+      "database_id": "d11928e7-6cfb-44f9-8819-07a637863664",
     },
   ],
   "queues": {
