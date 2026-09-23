@@ -81,3 +81,9 @@ Open `http://localhost:8787/dashboard` for the visual dashboard. Enter the
 analytics key in the page; it is kept in memory and sent only as a request
 header. The deployed dashboard is available at
 `https://edgeguard.pranavdodda3.workers.dev/dashboard`.
+
+<img width="1512" height="863" alt="image" src="https://github.com/user-attachments/assets/42f82ec3-901b-4885-b27b-9cec93e9a20c" />
+
+<img width="1512" height="861" alt="image" src="https://github.com/user-attachments/assets/e62b5e81-f59c-4c36-8355-b089ce1b575f" />
+
+
